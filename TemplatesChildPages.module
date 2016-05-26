@@ -25,7 +25,7 @@ class TemplatesChildPages extends WireData implements Module {
 	public static function getModuleInfo() {
 		return array(
 			'title' => 'Templates: Child Pages',
-			'version' => '1',
+			'version' => '2',
 			'author' => 'Robin Sallis',
 			'summary' => 'For any page, allows the restricting of templates that may be used for child pages.',
 			'singular' => true,
@@ -51,7 +51,7 @@ class TemplatesChildPages extends WireData implements Module {
 			$f->label = 'Template restrictions for child pages';
 			$f->description = 'If empty no additional restrictions on templates are applied.';
 			$f->addFlag(32); // Field is access controlled (superuser only)
-			$f->collapsed = Inputfield::collapsedBlank; // Field is collapsed if blank
+			$f->collapsed = Inputfield::collapsedHidden; // Field is hidden
 			$f->save();
 		}
 	}
@@ -63,7 +63,58 @@ class TemplatesChildPages extends WireData implements Module {
 	 *
 	 */
 	public function init() {
+		$this->addHookAfter('ProcessPageEdit::buildFormChildren', $this, 'appendFieldToForm');
+		$this->addHookAfter('Pages::saveReady', $this, 'saveTemplatesField');
 		$this->addHookAfter('ProcessPageAdd::getAllowedTemplates', $this, 'filterAllowedTemplates');
+	}
+
+	/**
+	 * Append allowed templates field to Children tab form
+	 *
+	 * @access public
+	 *
+	 */
+	public function appendFieldToForm($event) {
+		if(!wire('user')->isSuperuser()) return;
+		$page = $event->object->getPage();
+		if($page->template->hasField('templates_child_pages')) {
+			$field = wire('fields')->get('templates_child_pages');
+			$if = $field->getInputfield($page);
+			$form = $event->return;
+			// Get value of 'templates_child_pages' field
+			$allowed_templates = $page->templates_child_pages;
+			// Create and append inputfield
+			$f = wire('modules')->FieldtypeTemplates->getInputfield($page, $field);
+			$f->attr('name', 'allowed_templates');
+			$f->label = $if->label;
+			$f->description = $if->description;
+			$f->attr('value', $allowed_templates);
+			$form->append($f);
+		}
+	}
+
+	/**
+	 * Save allowed templates
+	 *
+	 * @access public
+	 *
+	 */
+	public function saveTemplatesField($event) {
+		if(!wire('user')->isSuperuser()) return;
+		$page = $event->arguments('page');
+		if($page->template->hasField('templates_child_pages')) {
+			$allowed_templates = wire('input')->post->allowed_templates;
+			// Set value of 'templates_child_pages' field
+			if(is_array($allowed_templates)) {
+				$allowed_templates_int = array();
+				foreach ($allowed_templates as $template_id) {
+					$allowed_templates_int[] = (int)$template_id;
+				}
+				$page->templates_child_pages = $allowed_templates_int;
+			} else {
+				$page->templates_child_pages = '';
+			}
+		}
 	}
 
 	/**
@@ -82,7 +133,6 @@ class TemplatesChildPages extends WireData implements Module {
 			$parent = wire('pages')->get((int)$this->input->post->parent_id);
 		}
 		if($parent instanceof NullPage) return;
-
 		// Filter templates
 		$templates = $event->return;
 		$allowed_templates = $parent->templates_child_pages;
@@ -115,5 +165,5 @@ class TemplatesChildPages extends WireData implements Module {
 			$fields->delete($f);
 		}
 	}
-	
+
 }

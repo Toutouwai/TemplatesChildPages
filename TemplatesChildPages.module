@@ -48,7 +48,7 @@ class TemplatesChildPages extends WireData implements Module {
 			$f->type = $this->modules->get('FieldtypeTemplates');
 			$f->name = 'templates_child_pages';
 			$f->tags = 'TemplatesChildPages';
-			$f->label = 'Template restrictions for child pages';
+			$f->label = 'Template restrictions for children';
 			$f->description = 'If empty no additional restrictions on templates are applied.';
 			$f->addFlag(32); // Field is access controlled (superuser only)
 			$f->collapsed = Inputfield::collapsedHidden; // Field is hidden

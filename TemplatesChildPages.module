@@ -1,0 +1,119 @@
+<?php
+/**
+ *
+ * Templates: Child Pages
+ *
+ * @author Robin Sallis
+ *
+ * @credits bitpoet: some code adapted from his 'Template Access by Parents' module
+ * @credits hani: this module requires his 'Template ASM Select' module
+ *
+ * ProcessWire 2.x
+ * Copyright (C) 2014 by Ryan Cramer
+ * Licensed under GNU/GPL v2, see LICENSE.TXT
+ *
+ * http://processwire.com
+ *
+ */
+
+class TemplatesChildPages extends WireData implements Module {
+
+	/**
+	 * Module information
+	 *
+	 */
+	public static function getModuleInfo() {
+		return array(
+			'title' => 'Templates: Child Pages',
+			'version' => '1',
+			'author' => 'Robin Sallis',
+			'summary' => 'For any page, allows the restricting of templates that may be used for child pages.',
+			'singular' => true,
+			'autoload' => "template=admin",
+			'icon' => 'cubes',
+			'requires' => 'FieldtypeTemplates', // 'Template ASM Select' module
+		);
+	}
+
+	/**
+	 * On install, add the field used for storing allowed templates
+	 *
+	 * @access public
+	 *
+	 */
+	public function ___install() {
+		$fields = wire('fields');
+		if(!$fields->get('templates_child_pages')) {
+			$f = new Field();
+			$f->type = $this->modules->get('FieldtypeTemplates');
+			$f->name = 'templates_child_pages';
+			$f->tags = 'TemplatesChildPages';
+			$f->label = 'Template restrictions for child pages';
+			$f->description = 'If empty no additional restrictions on templates are applied.';
+			$f->addFlag(32); // Field is access controlled (superuser only)
+			$f->collapsed = Inputfield::collapsedBlank; // Field is collapsed if blank
+			$f->save();
+		}
+	}
+
+	/**
+	 * Initialise
+	 *
+	 * @access public
+	 *
+	 */
+	public function init() {
+		$this->addHookAfter('ProcessPageAdd::getAllowedTemplates', $this, 'filterAllowedTemplates');
+	}
+
+	/**
+	 * Filter allowed templates
+	 *
+	 * @access public
+	 *
+	 */
+	public function filterAllowedTemplates($event) {
+		// Get parent page
+		$parent = $event->arguments(0);
+		if(! $parent) {
+			$parent = wire('pages')->get((int)$this->input->get->parent_id);
+		}
+		if(! $parent) {
+			$parent = wire('pages')->get((int)$this->input->post->parent_id);
+		}
+		if($parent instanceof NullPage) return;
+
+		// Filter templates
+		$templates = $event->return;
+		$allowed_templates = $parent->templates_child_pages;
+		if($allowed_templates) {
+			$out = array();
+			foreach($templates as $template) {
+				if(in_array($template->id, $allowed_templates)) {
+					$out[$template->id] = $template;
+				}
+			}
+			$event->return = $out;
+		}
+	}
+
+	/**
+	 * On uninstall, delete the field used for storing allowed templates
+	 *
+	 * @access public
+	 *
+	 */
+	public function ___uninstall() {
+		$fields = wire('fields');
+		$f = $fields->get('templates_child_pages');
+		if($f) {
+			$f_groups = $f->getFieldgroups();
+			foreach ($f_groups as $f_group) {
+				$f_group->remove($f);
+				$f_group->save();
+			}
+			$fields->delete($f);
+		}
+	}
+	
+}

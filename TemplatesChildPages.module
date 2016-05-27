@@ -25,7 +25,7 @@ class TemplatesChildPages extends WireData implements Module {
 	public static function getModuleInfo() {
 		return array(
 			'title' => 'Templates: Child Pages',
-			'version' => '2',
+			'version' => '3',
 			'author' => 'Robin Sallis',
 			'summary' => 'For any page, allows the restricting of templates that may be used for child pages.',
 			'singular' => true,
@@ -42,8 +42,7 @@ class TemplatesChildPages extends WireData implements Module {
 	 *
 	 */
 	public function ___install() {
-		$fields = wire('fields');
-		if(!$fields->get('templates_child_pages')) {
+		if(!$this->fields->get('templates_child_pages')) {
 			$f = new Field();
 			$f->type = $this->modules->get('FieldtypeTemplates');
 			$f->name = 'templates_child_pages';
@@ -51,6 +50,7 @@ class TemplatesChildPages extends WireData implements Module {
 			$f->label = 'Template restrictions for children';
 			$f->description = 'If empty no additional restrictions on templates are applied.';
 			$f->addFlag(32); // Field is access controlled (superuser only)
+			$f->addFlag(4); // Field is global
 			$f->collapsed = Inputfield::collapsedHidden; // Field is hidden
 			$f->save();
 		}
@@ -68,6 +68,7 @@ class TemplatesChildPages extends WireData implements Module {
 		$this->addHookAfter('ProcessPageAdd::getAllowedTemplates', $this, 'filterAllowedTemplates');
 	}
 
+
 	/**
 	 * Append allowed templates field to Children tab form
 	 *
@@ -75,21 +76,47 @@ class TemplatesChildPages extends WireData implements Module {
 	 *
 	 */
 	public function appendFieldToForm($event) {
-		if(!wire('user')->isSuperuser()) return;
+		if(!$this->user->isSuperuser()) return;
+
+		// Children tab is loaded via AJAX so make sure AsmSelect JS/CSS files are included in head
+		$asm = $this->modules->InputfieldAsmSelect;
+		$class = $asm->className();
+		$info = $asm->getModuleInfo();
+		$ver = $info['version'];
+		$jsfile = $this->config->debug ? 'jquery.asmselect.js' : 'jquery.asmselect.min.js';
+		$this->config->scripts->add($this->config->urls->$class . "asmselect/$jsfile?v=$ver");
+		$this->config->styles->add($this->config->urls->$class . "$class.css?v=$ver");
+		$this->config->styles->add($this->config->urls->$class . "asmselect/jquery.asmselect.css?v=$ver");
+
+		// Append field
 		$page = $event->object->getPage();
 		if($page->template->hasField('templates_child_pages')) {
-			$field = wire('fields')->get('templates_child_pages');
+			$field = $this->fields->get('templates_child_pages');
 			$if = $field->getInputfield($page);
 			$form = $event->return;
 			// Get value of 'templates_child_pages' field
 			$allowed_templates = $page->templates_child_pages;
+
 			// Create and append inputfield
-			$f = wire('modules')->FieldtypeTemplates->getInputfield($page, $field);
-			$f->attr('name', 'allowed_templates');
+			$f = $this->modules->get('InputfieldAsmSelect');
+			$f->name = 'allowed_templates';
 			$f->label = $if->label;
 			$f->description = $if->description;
-			$f->attr('value', $allowed_templates);
+			if($field->templateTypes) {
+				// Apply any limits on template types set in field options
+				$ids = implode('|', $field->templateTypes);
+				$templates = $this->templates->find("id=$ids");
+			} else {
+				$templates = $this->templates;
+			}
+			foreach($templates as $template) {
+				$f->addOption($template->id, $template->label ? $template->label : $template->name);
+			}
+			$f->value = $allowed_templates;
 			$form->append($f);
+
+			// Add JS options
+			$this->config->js($f->id, array('sortable' => false));
 		}
 	}
 
@@ -100,10 +127,10 @@ class TemplatesChildPages extends WireData implements Module {
 	 *
 	 */
 	public function saveTemplatesField($event) {
-		if(!wire('user')->isSuperuser()) return;
+		if(!$this->user->isSuperuser()) return;
 		$page = $event->arguments('page');
 		if($page->template->hasField('templates_child_pages')) {
-			$allowed_templates = wire('input')->post->allowed_templates;
+			$allowed_templates = $this->input->post->allowed_templates;
 			// Set value of 'templates_child_pages' field
 			if(is_array($allowed_templates)) {
 				$allowed_templates_int = array();
@@ -127,10 +154,10 @@ class TemplatesChildPages extends WireData implements Module {
 		// Get parent page
 		$parent = $event->arguments(0);
 		if(! $parent) {
-			$parent = wire('pages')->get((int)$this->input->get->parent_id);
+			$parent = $this->pages->get((int)$this->input->get->parent_id);
 		}
 		if(! $parent) {
-			$parent = wire('pages')->get((int)$this->input->post->parent_id);
+			$parent = $this->pages->get((int)$this->input->post->parent_id);
 		}
 		if($parent instanceof NullPage) return;
 		// Filter templates
@@ -154,15 +181,15 @@ class TemplatesChildPages extends WireData implements Module {
 	 *
 	 */
 	public function ___uninstall() {
-		$fields = wire('fields');
-		$f = $fields->get('templates_child_pages');
+		$f = $this->fields->get('templates_child_pages');
 		if($f) {
 			$f_groups = $f->getFieldgroups();
 			foreach ($f_groups as $f_group) {
+				$f->removeFlag(4); // Remove global flag
 				$f_group->remove($f);
 				$f_group->save();
 			}
-			$fields->delete($f);
+			$this->fields->delete($f);
 		}
 	}
 

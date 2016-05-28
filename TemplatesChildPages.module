@@ -25,7 +25,7 @@ class TemplatesChildPages extends WireData implements Module {
 	public static function getModuleInfo() {
 		return array(
 			'title' => 'Templates: Child Pages',
-			'version' => '3',
+			'version' => '4',
 			'author' => 'Robin Sallis',
 			'summary' => 'For any page, allows the restricting of templates that may be used for child pages.',
 			'singular' => true,
@@ -113,6 +113,7 @@ class TemplatesChildPages extends WireData implements Module {
 				$f->addOption($template->id, $template->label ? $template->label : $template->name);
 			}
 			$f->value = $allowed_templates;
+			$f->collapsed = Inputfield::collapsedBlank; // Field is collapsed if empty
 			$form->append($f);
 
 			// Add JS options

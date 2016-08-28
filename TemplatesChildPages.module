@@ -5,8 +5,7 @@
  *
  * @author Robin Sallis
  *
- * @credits bitpoet: some code adapted from his 'Template Access by Parents' module
- * @credits hani: this module requires his 'Template ASM Select' module
+ * @credits BitPoet: some code adapted from his 'Template Access by Parents' module
  *
  * ProcessWire 2.x
  * Copyright (C) 2014 by Ryan Cramer
@@ -25,35 +24,37 @@ class TemplatesChildPages extends WireData implements Module {
 	public static function getModuleInfo() {
 		return array(
 			'title' => 'Templates: Child Pages',
-			'version' => '4',
+			'version' => '5',
 			'author' => 'Robin Sallis',
 			'summary' => 'For any page, allows the restricting of templates that may be used for child pages.',
 			'singular' => true,
 			'autoload' => "template=admin",
-			'icon' => 'cubes',
-			'requires' => 'FieldtypeTemplates', // 'Template ASM Select' module
+			'icon' => 'cubes'
 		);
 	}
 
+
+	protected $table = "templates_child_pages";
+
 	/**
-	 * On install, add the field used for storing allowed templates
+	 * Install
 	 *
 	 * @access public
 	 *
 	 */
 	public function ___install() {
-		if(!$this->fields->get('templates_child_pages')) {
-			$f = new Field();
-			$f->type = $this->modules->get('FieldtypeTemplates');
-			$f->name = 'templates_child_pages';
-			$f->tags = 'TemplatesChildPages';
-			$f->label = 'Template restrictions for children';
-			$f->description = 'If empty no additional restrictions on templates are applied.';
-			$f->addFlag(32); // Field is access controlled (superuser only)
-			$f->addFlag(4); // Field is global
-			$f->collapsed = Inputfield::collapsedHidden; // Field is hidden
-			$f->save();
-		}
+		$engine = $this->config->dbEngine;
+		$charset = $this->config->dbCharset;
+		$sql = <<< _END
+		CREATE TABLE {$this->table} (
+			page_id int UNSIGNED NOT NULL,
+			data MEDIUMTEXT,
+			PRIMARY KEY (page_id)
+		) ENGINE = $engine DEFAULT CHARSET = $charset;
+_END;
+		$query = $this->database->prepare($sql);
+		$result = $query->execute();
+		if(!$result) $this->error("Error creating table '{$this->table}'");
 	}
 
 	/**
@@ -64,10 +65,30 @@ class TemplatesChildPages extends WireData implements Module {
 	 */
 	public function init() {
 		$this->addHookAfter('ProcessPageEdit::buildFormChildren', $this, 'appendFieldToForm');
-		$this->addHookAfter('Pages::saveReady', $this, 'saveTemplatesField');
-		$this->addHookAfter('ProcessPageAdd::getAllowedTemplates', $this, 'filterAllowedTemplates');
+		$this->addHookAfter('ProcessPageAdd::getAllowedTemplates', $this, 'filterTemplates');
+		$this->addHookAfter('Pages::saveReady', $this, 'saveAllowedTemplates');
+		$this->addHookAfter('Pages::delete', $this, 'pageDeleted');
 	}
 
+	/**
+	 * Get allowed templates
+	 *
+	 * @access public
+	 *
+	 */
+	public function getAllowedTemplates($page) {
+		$query = $this->database->prepare("SELECT data FROM {$this->table} WHERE page_id = :id");
+		$query->bindValue(":id", $page->id, PDO::PARAM_INT);
+		$query->execute();
+		$result = $query->fetch(PDO::FETCH_ASSOC);
+		if($result && strlen($result["data"]) > 0) {
+			$data = wireDecodeJSON($result["data"]);
+			if(is_array($data) && count($data) > 0) {
+				return $data;
+			}
+		}
+		return array();
+	}
 
 	/**
 	 * Append allowed templates field to Children tab form
@@ -77,6 +98,8 @@ class TemplatesChildPages extends WireData implements Module {
 	 */
 	public function appendFieldToForm($event) {
 		if(!$this->user->isSuperuser()) return;
+		$form = $event->return;
+		$page = $event->object->getPage();
 
 		// Children tab is loaded via AJAX so make sure AsmSelect JS/CSS files are included in head
 		$asm = $this->modules->InputfieldAsmSelect;
@@ -88,82 +111,39 @@ class TemplatesChildPages extends WireData implements Module {
 		$this->config->styles->add($this->config->urls->$class . "$class.css?v=$ver");
 		$this->config->styles->add($this->config->urls->$class . "asmselect/jquery.asmselect.css?v=$ver");
 
-		// Append field
-		$page = $event->object->getPage();
-		if($page->template->hasField('templates_child_pages')) {
-			$field = $this->fields->get('templates_child_pages');
-			$if = $field->getInputfield($page);
-			$form = $event->return;
-			// Get value of 'templates_child_pages' field
-			$allowed_templates = $page->templates_child_pages;
-
-			// Create and append inputfield
-			$f = $this->modules->get('InputfieldAsmSelect');
-			$f->name = 'allowed_templates';
-			$f->label = $if->label;
-			$f->description = $if->description;
-			if($field->templateTypes) {
-				// Apply any limits on template types set in field options
-				$ids = implode('|', $field->templateTypes);
-				$templates = $this->templates->find("id=$ids");
-			} else {
-				$templates = $this->templates;
-			}
-			foreach($templates as $template) {
-				$f->addOption($template->id, $template->label ? $template->label : $template->name);
-			}
-			$f->value = $allowed_templates;
-			$f->collapsed = Inputfield::collapsedBlank; // Field is collapsed if empty
-			$form->append($f);
-
-			// Add JS options
-			$this->config->js($f->id, array('sortable' => false));
+		// Create and append inputfield
+		$f = $this->modules->get('InputfieldAsmSelect');
+		$f->name = 'allowed_templates';
+		$f->label = 'Template restrictions for children';
+		$f->description = 'If empty no additional restrictions on templates are applied.';
+		foreach($this->templates as $template) {
+			$f->addOption($template->id, $template->label ? $template->label : $template->name);
 		}
+		$f->value = $this->getAllowedTemplates($page);
+		$f->collapsed = Inputfield::collapsedBlank; // Field is collapsed if empty
+		$form->append($f);
 	}
 
 	/**
-	 * Save allowed templates
+	 * Filter templates
 	 *
 	 * @access public
 	 *
 	 */
-	public function saveTemplatesField($event) {
-		if(!$this->user->isSuperuser()) return;
-		$page = $event->arguments('page');
-		if($page->template->hasField('templates_child_pages')) {
-			$allowed_templates = $this->input->post->allowed_templates;
-			// Set value of 'templates_child_pages' field
-			if(is_array($allowed_templates)) {
-				$allowed_templates_int = array();
-				foreach ($allowed_templates as $template_id) {
-					$allowed_templates_int[] = (int)$template_id;
-				}
-				$page->templates_child_pages = $allowed_templates_int;
-			} else {
-				$page->templates_child_pages = '';
-			}
-		}
-	}
-
-	/**
-	 * Filter allowed templates
-	 *
-	 * @access public
-	 *
-	 */
-	public function filterAllowedTemplates($event) {
+	public function filterTemplates($event) {
 		// Get parent page
-		$parent = $event->arguments(0);
-		if(! $parent) {
+		$parent = $event->arguments('parent');
+		if(!$parent) {
 			$parent = $this->pages->get((int)$this->input->get->parent_id);
 		}
-		if(! $parent) {
+		if(!$parent) {
 			$parent = $this->pages->get((int)$this->input->post->parent_id);
 		}
 		if($parent instanceof NullPage) return;
+
 		// Filter templates
 		$templates = $event->return;
-		$allowed_templates = $parent->templates_child_pages;
+		$allowed_templates = $this->getAllowedTemplates($parent);
 		if($allowed_templates) {
 			$out = array();
 			foreach($templates as $template) {
@@ -176,22 +156,58 @@ class TemplatesChildPages extends WireData implements Module {
 	}
 
 	/**
-	 * On uninstall, delete the field used for storing allowed templates
+	 * Save allowed templates
+	 *
+	 * @access public
+	 *
+	 */
+	public function saveAllowedTemplates($event) {
+		if(!$this->user->isSuperuser()) return;
+		$page = $event->arguments('page');
+
+		// Get array of allowed template IDs
+		$allowed_templates = $this->input->post->allowed_templates;
+		if(is_array($allowed_templates)) {
+			$allowed_templates = array_map('intval', $allowed_templates);
+			$allowed_templates = wireEncodeJSON($allowed_templates);
+		} else {
+			$allowed_templates = '';
+		}
+
+		// Save to database
+		$sql = "REPLACE INTO {$this->table} (page_id, data) VALUES (:id, :data)";
+		$query = $this->database->prepare($sql);
+		$query->bindValue(":id", $page->id, PDO::PARAM_INT);
+		$query->bindValue(":data", $allowed_templates, PDO::PARAM_STR);
+		$query->execute();
+	}
+
+	/**
+	 * Delete table row when page is deleted
+	 *
+	 * @access public
+	 *
+	 */
+	public function pageDeleted($event) {
+		$page = $event->arguments('page');
+		$sql = "DELETE FROM {$this->table} WHERE page_id = :id";
+		$query = $this->database->prepare($sql);
+		$query->bindValue(":id", $page->id, PDO::PARAM_INT);
+		$query->execute();
+	}
+
+	/**
+	 * Uninstall
 	 *
 	 * @access public
 	 *
 	 */
 	public function ___uninstall() {
-		$f = $this->fields->get('templates_child_pages');
-		if($f) {
-			$f_groups = $f->getFieldgroups();
-			foreach ($f_groups as $f_group) {
-				$f->removeFlag(4); // Remove global flag
-				$f_group->remove($f);
-				$f_group->save();
-			}
-			$this->fields->delete($f);
-		}
+		$database = $this->database;
+		$sql = "DROP TABLE {$this->table}";
+		$query = $database->prepare($sql);
+		$result = $query->execute();
+		if(!$result) $this->error("Error removing table '{$this->table}'");
 	}
 
 }

@@ -24,7 +24,6 @@ class TemplatesChildPages extends WireData implements Module {
 	public static function getModuleInfo() {
 		return array(
 			'title' => 'Templates: Child Pages',
-			'version' => '5',
 			'author' => 'Robin Sallis',
 			'summary' => 'For any page, allows the restricting of templates that may be used for child pages.',
 			'singular' => true,
@@ -43,6 +42,68 @@ class TemplatesChildPages extends WireData implements Module {
 	 *
 	 */
 	public function ___install() {
+		$this->createTable();
+	}
+
+	public function ___upgrade($fromVersion, $toVersion) {
+		// Upgrade from < v0.0.5
+		if($fromVersion < 5) {
+			// Create table
+			$this->createTable();
+			
+			// Migrate old data
+			$f = $this->fields->get('templates_child_pages');
+			if($f && $f->type->name == 'FieldtypeTemplates') {
+				// Find pages with template restrictions
+				$restricted_pages = $this->pages->find("templates_child_pages.count>0");
+				$migration_results = array();
+				foreach($restricted_pages as $restricted_page) {
+					$field_allowed_templates = array_map( function($object) { return $object->id; }, $restricted_page->templates_child_pages );
+					$this->saveAllowedTemplates($restricted_page, $field_allowed_templates);
+					$db_allowed_templates = $this->getAllowedTemplates($restricted_page);
+					if($field_allowed_templates === $db_allowed_templates) {
+						$migration_results[$restricted_page->id] = true;
+					} else {
+						$migration_results[$restricted_page->id] = false;
+					}
+				}
+				if(in_array(false, $migration_results)) {
+					$this->warning('Sorry, there was a problem migrating the existing data for this module.');
+				} else {
+					// Data migration was successful, delete obsolete field
+					$f_groups = $f->getFieldgroups();
+					foreach ($f_groups as $f_group) {
+						$f->removeFlag(4); // Remove global flag
+						$f_group->remove($f);
+						$f_group->save();
+					}
+					$this->fields->delete($f);
+					$this->message('Migration of existing data was successful.');
+				}
+			}
+		}
+	}
+
+	/**
+	 * Initialise
+	 *
+	 * @access public
+	 *
+	 */
+	public function init() {
+		$this->addHookAfter('ProcessPageEdit::buildFormChildren', $this, 'appendFieldToForm');
+		$this->addHookAfter('ProcessPageAdd::getAllowedTemplates', $this, 'filterTemplates');
+		$this->addHookAfter('Pages::saveReady', $this, 'getPostData');
+		$this->addHookAfter('Pages::delete', $this, 'pageDeleted');
+	}
+
+	/**
+	 * Get allowed templates
+	 *
+	 * @access public
+	 *
+	 */
+	public function createTable() {
 		$engine = $this->config->dbEngine;
 		$charset = $this->config->dbCharset;
 		$sql = <<< _END
@@ -55,19 +116,6 @@ _END;
 		$query = $this->database->prepare($sql);
 		$result = $query->execute();
 		if(!$result) $this->error("Error creating table '{$this->table}'");
-	}
-
-	/**
-	 * Initialise
-	 *
-	 * @access public
-	 *
-	 */
-	public function init() {
-		$this->addHookAfter('ProcessPageEdit::buildFormChildren', $this, 'appendFieldToForm');
-		$this->addHookAfter('ProcessPageAdd::getAllowedTemplates', $this, 'filterTemplates');
-		$this->addHookAfter('Pages::saveReady', $this, 'saveAllowedTemplates');
-		$this->addHookAfter('Pages::delete', $this, 'pageDeleted');
 	}
 
 	/**
@@ -88,6 +136,29 @@ _END;
 			}
 		}
 		return array();
+	}
+
+	/**
+	 * Save allowed templates
+	 *
+	 * @access public
+	 *
+	 */
+	public function saveAllowedTemplates($page, $allowed_templates) {
+		// Process $allowed_templates array
+		if(is_array($allowed_templates)) {
+			$allowed_templates = array_map('intval', $allowed_templates);
+			$allowed_templates = wireEncodeJSON($allowed_templates);
+		} else {
+			$allowed_templates = '';
+		}
+
+		// Save to database
+		$sql = "REPLACE INTO {$this->table} (page_id, data) VALUES (:id, :data)";
+		$query = $this->database->prepare($sql);
+		$query->bindValue(":id", $page->id, PDO::PARAM_INT);
+		$query->bindValue(":data", $allowed_templates, PDO::PARAM_STR);
+		$query->execute();
 	}
 
 	/**
@@ -156,30 +227,20 @@ _END;
 	}
 
 	/**
-	 * Save allowed templates
+	 * Get allowed templates from post data
 	 *
 	 * @access public
 	 *
 	 */
-	public function saveAllowedTemplates($event) {
+	public function getPostData($event) {
 		if(!$this->user->isSuperuser()) return;
 		$page = $event->arguments('page');
 
-		// Get array of allowed template IDs
-		$allowed_templates = $this->input->post->allowed_templates;
-		if(is_array($allowed_templates)) {
-			$allowed_templates = array_map('intval', $allowed_templates);
-			$allowed_templates = wireEncodeJSON($allowed_templates);
-		} else {
-			$allowed_templates = '';
+		// Get array of allowed template IDs and save
+		if($this->input->post->allowed_templates !== null) {
+			$allowed_templates = $this->input->post->allowed_templates;
+			$this->saveAllowedTemplates($page, $allowed_templates);
 		}
-
-		// Save to database
-		$sql = "REPLACE INTO {$this->table} (page_id, data) VALUES (:id, :data)";
-		$query = $this->database->prepare($sql);
-		$query->bindValue(":id", $page->id, PDO::PARAM_INT);
-		$query->bindValue(":data", $allowed_templates, PDO::PARAM_STR);
-		$query->execute();
 	}
 
 	/**

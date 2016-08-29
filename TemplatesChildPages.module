@@ -24,6 +24,7 @@ class TemplatesChildPages extends WireData implements Module {
 	public static function getModuleInfo() {
 		return array(
 			'title' => 'Templates: Child Pages',
+			'version' => '7',
 			'author' => 'Robin Sallis',
 			'summary' => 'For any page, allows the restricting of templates that may be used for child pages.',
 			'singular' => true,
@@ -185,8 +186,8 @@ _END;
 		// Create and append inputfield
 		$f = $this->modules->get('InputfieldAsmSelect');
 		$f->name = 'allowed_templates';
-		$f->label = 'Template restrictions for children';
-		$f->description = 'If empty no additional restrictions on templates are applied.';
+		$f->label = $this->_('Template restrictions for children');
+		$f->description = $this->_('If empty no additional restrictions on templates are applied.');
 		foreach($this->templates as $template) {
 			$f->addOption($template->id, $template->label ? $template->label : $template->name);
 		}

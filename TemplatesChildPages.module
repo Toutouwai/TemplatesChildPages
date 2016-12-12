@@ -99,7 +99,7 @@ class TemplatesChildPages extends WireData implements Module {
 	}
 
 	/**
-	 * Get allowed templates
+	 * Create table
 	 *
 	 * @access public
 	 *

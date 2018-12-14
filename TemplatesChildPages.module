@@ -24,7 +24,7 @@ class TemplatesChildPages extends WireData implements Module {
 	public static function getModuleInfo() {
 		return array(
 			'title' => 'Templates: Child Pages',
-			'version' => '7',
+			'version' => '0.1.8',
 			'author' => 'Robin Sallis',
 			'summary' => 'For any page, allows the restricting of templates that may be used for child pages.',
 			'singular' => true,
@@ -37,55 +37,6 @@ class TemplatesChildPages extends WireData implements Module {
 	protected $table = "templates_child_pages";
 
 	/**
-	 * Install
-	 *
-	 * @access public
-	 *
-	 */
-	public function ___install() {
-		$this->createTable();
-	}
-
-	public function ___upgrade($fromVersion, $toVersion) {
-		// Upgrade from < v0.0.5
-		if($fromVersion < 5) {
-			// Create table
-			$this->createTable();
-			
-			// Migrate old data
-			$f = $this->fields->get('templates_child_pages');
-			if($f && $f->type->name == 'FieldtypeTemplates') {
-				// Find pages with template restrictions
-				$restricted_pages = $this->pages->find("templates_child_pages.count>0");
-				$migration_results = array();
-				foreach($restricted_pages as $restricted_page) {
-					$field_allowed_templates = array_map( function($object) { return $object->id; }, $restricted_page->templates_child_pages );
-					$this->saveAllowedTemplates($restricted_page, $field_allowed_templates);
-					$db_allowed_templates = $this->getAllowedTemplates($restricted_page);
-					if($field_allowed_templates === $db_allowed_templates) {
-						$migration_results[$restricted_page->id] = true;
-					} else {
-						$migration_results[$restricted_page->id] = false;
-					}
-				}
-				if(in_array(false, $migration_results)) {
-					$this->warning('Sorry, there was a problem migrating the existing data for this module.');
-				} else {
-					// Data migration was successful, delete obsolete field
-					$f_groups = $f->getFieldgroups();
-					foreach ($f_groups as $f_group) {
-						$f->removeFlag(4); // Remove global flag
-						$f_group->remove($f);
-						$f_group->save();
-					}
-					$this->fields->delete($f);
-					$this->message('Migration of existing data was successful.');
-				}
-			}
-		}
-	}
-
-	/**
 	 * Initialise
 	 *
 	 * @access public
@@ -93,30 +44,90 @@ class TemplatesChildPages extends WireData implements Module {
 	 */
 	public function init() {
 		$this->addHookAfter('ProcessPageEdit::buildFormChildren', $this, 'appendFieldToForm');
-		$this->addHookAfter('ProcessPageAdd::getAllowedTemplates', $this, 'filterTemplates');
 		$this->addHookAfter('Pages::saveReady', $this, 'getPostData');
+		$this->addHookAfter('ProcessPageAdd::getAllowedTemplates', $this, 'filterTemplates');
 		$this->addHookAfter('Pages::delete', $this, 'pageDeleted');
 	}
 
 	/**
-	 * Create table
+	 * Append allowed templates field to Children tab form
 	 *
 	 * @access public
 	 *
 	 */
-	public function createTable() {
-		$engine = $this->config->dbEngine;
-		$charset = $this->config->dbCharset;
-		$sql = <<< _END
-		CREATE TABLE {$this->table} (
-			page_id int UNSIGNED NOT NULL,
-			data MEDIUMTEXT,
-			PRIMARY KEY (page_id)
-		) ENGINE = $engine DEFAULT CHARSET = $charset;
-_END;
-		$query = $this->database->prepare($sql);
-		$result = $query->execute();
-		if(!$result) $this->error("Error creating table '{$this->table}'");
+	public function appendFieldToForm($event) {
+		if(!$this->user->isSuperuser()) return;
+		$form = $event->return;
+		$page = $event->object->getPage();
+
+		// Children tab is loaded via AJAX so make sure AsmSelect JS/CSS files are included in head
+		$asm = $this->modules->InputfieldAsmSelect;
+		$class = $asm->className();
+		$info = $asm->getModuleInfo();
+		$ver = $info['version'];
+		$jsfile = $this->config->debug ? 'jquery.asmselect.js' : 'jquery.asmselect.min.js';
+		$this->config->scripts->add($this->config->urls->$class . "asmselect/$jsfile?v=$ver");
+		$this->config->styles->add($this->config->urls->$class . "$class.css?v=$ver");
+		$this->config->styles->add($this->config->urls->$class . "asmselect/jquery.asmselect.css?v=$ver");
+
+		// Create and append inputfield
+		$f = $this->modules->get('InputfieldAsmSelect');
+		$f->name = 'allowed_templates';
+		$f->label = $this->_('Template restrictions for children');
+		$f->description = $this->_('If empty no additional restrictions on templates are applied.');
+		foreach($this->templates as $template) {
+			$f->addOption($template->id, $template->label ? $template->label : $template->name);
+		}
+		$f->value = $this->getAllowedTemplates($page);
+		$f->collapsed = Inputfield::collapsedBlank; // Field is collapsed if empty
+		$form->append($f);
+	}
+
+	/**
+	 * Get allowed templates from post data
+	 *
+	 * @access public
+	 *
+	 */
+	public function getPostData($event) {
+		if(!$this->user->isSuperuser()) return;
+		$page = $event->arguments('page');
+
+		// Get array of allowed template IDs and save
+		$allowed_templates = $this->input->post->allowed_templates;
+		if(!$allowed_templates) $allowed_templates = array();
+		$this->saveAllowedTemplates($page, $allowed_templates);
+	}
+
+	/**
+	 * Filter templates
+	 *
+	 * @access public
+	 *
+	 */
+	public function filterTemplates($event) {
+		// Get parent page
+		$parent = $event->arguments('parent');
+		if(!$parent) {
+			$parent = $this->pages->get((int)$this->input->get->parent_id);
+		}
+		if(!$parent) {
+			$parent = $this->pages->get((int)$this->input->post->parent_id);
+		}
+		if($parent instanceof NullPage) return;
+
+		// Filter templates
+		$templates = $event->return;
+		$allowed_templates = $this->getAllowedTemplates($parent);
+		if($allowed_templates) {
+			$out = array();
+			foreach($templates as $template) {
+				if(in_array($template->id, $allowed_templates)) {
+					$out[$template->id] = $template;
+				}
+			}
+			$event->return = $out;
+		}
 	}
 
 	/**
@@ -163,88 +174,6 @@ _END;
 	}
 
 	/**
-	 * Append allowed templates field to Children tab form
-	 *
-	 * @access public
-	 *
-	 */
-	public function appendFieldToForm($event) {
-		if(!$this->user->isSuperuser()) return;
-		$form = $event->return;
-		$page = $event->object->getPage();
-
-		// Children tab is loaded via AJAX so make sure AsmSelect JS/CSS files are included in head
-		$asm = $this->modules->InputfieldAsmSelect;
-		$class = $asm->className();
-		$info = $asm->getModuleInfo();
-		$ver = $info['version'];
-		$jsfile = $this->config->debug ? 'jquery.asmselect.js' : 'jquery.asmselect.min.js';
-		$this->config->scripts->add($this->config->urls->$class . "asmselect/$jsfile?v=$ver");
-		$this->config->styles->add($this->config->urls->$class . "$class.css?v=$ver");
-		$this->config->styles->add($this->config->urls->$class . "asmselect/jquery.asmselect.css?v=$ver");
-
-		// Create and append inputfield
-		$f = $this->modules->get('InputfieldAsmSelect');
-		$f->name = 'allowed_templates';
-		$f->label = $this->_('Template restrictions for children');
-		$f->description = $this->_('If empty no additional restrictions on templates are applied.');
-		foreach($this->templates as $template) {
-			$f->addOption($template->id, $template->label ? $template->label : $template->name);
-		}
-		$f->value = $this->getAllowedTemplates($page);
-		$f->collapsed = Inputfield::collapsedBlank; // Field is collapsed if empty
-		$form->append($f);
-	}
-
-	/**
-	 * Filter templates
-	 *
-	 * @access public
-	 *
-	 */
-	public function filterTemplates($event) {
-		// Get parent page
-		$parent = $event->arguments('parent');
-		if(!$parent) {
-			$parent = $this->pages->get((int)$this->input->get->parent_id);
-		}
-		if(!$parent) {
-			$parent = $this->pages->get((int)$this->input->post->parent_id);
-		}
-		if($parent instanceof NullPage) return;
-
-		// Filter templates
-		$templates = $event->return;
-		$allowed_templates = $this->getAllowedTemplates($parent);
-		if($allowed_templates) {
-			$out = array();
-			foreach($templates as $template) {
-				if(in_array($template->id, $allowed_templates)) {
-					$out[$template->id] = $template;
-				}
-			}
-			$event->return = $out;
-		}
-	}
-
-	/**
-	 * Get allowed templates from post data
-	 *
-	 * @access public
-	 *
-	 */
-	public function getPostData($event) {
-		if(!$this->user->isSuperuser()) return;
-		$page = $event->arguments('page');
-
-		// Get array of allowed template IDs and save
-		if($this->input->post->allowed_templates !== null) {
-			$allowed_templates = $this->input->post->allowed_templates;
-			$this->saveAllowedTemplates($page, $allowed_templates);
-		}
-	}
-
-	/**
 	 * Delete table row when page is deleted
 	 *
 	 * @access public
@@ -259,6 +188,37 @@ _END;
 	}
 
 	/**
+	 * Create table
+	 *
+	 * @access public
+	 *
+	 */
+	public function createTable() {
+		$engine = $this->config->dbEngine;
+		$charset = $this->config->dbCharset;
+		$sql = <<< _END
+		CREATE TABLE {$this->table} (
+			page_id int UNSIGNED NOT NULL,
+			data MEDIUMTEXT,
+			PRIMARY KEY (page_id)
+		) ENGINE = $engine DEFAULT CHARSET = $charset;
+_END;
+		$query = $this->database->prepare($sql);
+		$result = $query->execute();
+		if(!$result) $this->error("Error creating table '{$this->table}'");
+	}
+
+	/**
+	 * Install
+	 *
+	 * @access public
+	 *
+	 */
+	public function ___install() {
+		$this->createTable();
+	}
+
+	/**
 	 * Uninstall
 	 *
 	 * @access public
@@ -270,6 +230,54 @@ _END;
 		$query = $database->prepare($sql);
 		$result = $query->execute();
 		if(!$result) $this->error("Error removing table '{$this->table}'");
+	}
+
+	/**
+	 * Upgrade
+	 *
+	 * @access public
+	 *
+	 */
+	public function ___upgrade($fromVersion, $toVersion) {
+		// Convert integer version to semantic version
+		if(is_int($fromVersion)) $fromVersion = '0.0.' . $fromVersion;
+
+		// Upgrade from < v0.0.5
+		if(version_compare($fromVersion, '0.0.5', '<')) {
+			// Create table
+			$this->createTable();
+
+			// Migrate old data
+			$f = $this->fields->get('templates_child_pages');
+			if($f && $f->type->name == 'FieldtypeTemplates') {
+				// Find pages with template restrictions
+				$restricted_pages = $this->pages->find("templates_child_pages.count>0");
+				$migration_results = array();
+				foreach($restricted_pages as $restricted_page) {
+					$field_allowed_templates = array_map( function($object) { return $object->id; }, $restricted_page->templates_child_pages );
+					$this->saveAllowedTemplates($restricted_page, $field_allowed_templates);
+					$db_allowed_templates = $this->getAllowedTemplates($restricted_page);
+					if($field_allowed_templates === $db_allowed_templates) {
+						$migration_results[$restricted_page->id] = true;
+					} else {
+						$migration_results[$restricted_page->id] = false;
+					}
+				}
+				if(in_array(false, $migration_results)) {
+					$this->warning('Sorry, there was a problem migrating the existing data for this module.');
+				} else {
+					// Data migration was successful, delete obsolete field
+					$f_groups = $f->getFieldgroups();
+					foreach ($f_groups as $f_group) {
+						$f->removeFlag(4); // Remove global flag
+						$f_group->remove($f);
+						$f_group->save();
+					}
+					$this->fields->delete($f);
+					$this->message('Migration of existing data was successful.');
+				}
+			}
+		}
 	}
 
 }

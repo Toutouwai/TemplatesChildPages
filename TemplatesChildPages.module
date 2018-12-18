@@ -25,11 +25,12 @@ class TemplatesChildPages extends WireData implements Module {
 		return array(
 			'title' => 'Templates: Child Pages',
 			'version' => '0.1.8',
-			'author' => 'Robin Sallis',
 			'summary' => 'For any page, allows the restricting of templates that may be used for child pages.',
+			'author' => 'Robin Sallis',
+			'href' => 'https://github.com/Toutouwai/TemplatesChildPages',
+			'icon' => 'cubes',
 			'singular' => true,
-			'autoload' => "template=admin",
-			'icon' => 'cubes'
+			'autoload' => 'template=admin',
 		);
 	}
 
